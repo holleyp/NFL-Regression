@@ -1,0 +1,1 @@
+This project uses multiple linear regression models to predict the amount of wins NFL teams will have at the end of the season, the final project file is compiled and able to be viewed at https://lnkd.in/gr_HvRK8
