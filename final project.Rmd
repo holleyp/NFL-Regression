@@ -1,0 +1,459 @@
+---
+title: "NFL Wins Regression Project"
+author: "Paul Holley"
+date: '2024-06-13'
+output: html_document
+---
+
+Hello! The goal of this project is to demonstrate that you can make better predictions with better data. This is accomplished by using NFL data to predict the total wins a team will have each season. In week one I start with data from a team's first game, in week two I have data from two games now, I continue doing this every week of a season until I have 17 models to predict and compare with.
+
+This project was made to practice my data analysis skills and all my coding in R. This project involves data mining HTML webpages, cleaning and sub-setting data, making regression models, and making comparisons between them.
+
+Library all my packages at the start.
+
+```{r setup, message = FALSE, warning=FALSE}
+library(rvest)
+library(plyr)
+library(ggplot2)
+library(here)
+library(nflplotR)
+```
+
+
+## Data-mining
+
+First things first I need to state the data I need. To train my models I have to get the total season wins for each team for every year. I accomplished this step by making a function to return total wins, team name, and year from pro football archives.
+
+```{r get_season}
+get_season <- function(year) {
+  # prevents bad inputs
+  if (!(year %in% 1970:2023)) {
+    print("pick a year between 1970 and 2022")
+    return()
+  }
+  
+  url <- paste("https://www.profootballarchives.com/", year, ".html", sep = "") 
+  url %>%
+    read_html %>% # reads the html website
+    html_table() %>% # gets the tables from the website
+    .[[3]] -> df # stores table I need
+  
+  #cleaning data
+  df <- as.data.frame(df) # convert to data frame
+  names(df) <- c("Team", "W", "L", "T", "PCT", "PF", "PA", "Home W", "Home L",
+                 "Home T", "Home PCT", "Away W", "Away L", "Away T", "Away PCT")
+  df <- df[!is.na(as.numeric(df$W)),] #removing bad entries
+  df[,2:15] <- sapply(df[,2:15], as.numeric) # making entries numeric
+  df$Year = year # updates year column
+  
+  # Logic to only use the NFL teams by not including other teams on table
+  if (year < 1976) {
+    df <- df[1:26,] # 26 teams for years 1970 - 1975
+  } else if (year < 1995) {
+    df <- df[1:28,] # 28 teams years 1976 - 1998
+  } else if (year < 1999) {
+    df <- df[1:30,]# 30 teams years 1995 - 1998
+  }else if (year < 2002) {
+    df <- df[1:31,]# 31 teams years 1999 - 2001
+  } else {
+    df <- df[1:32,]# 32 teams 2002 -> now
+  }
+  
+  return(df)
+}
+```
+
+For the next step I needed a way make the team names become the abbreviation for a team, this is needed so I can get the correct URL from pro football reference for each team and year. I can accomplish this easily with a dictionary, thank you to mjk2244 on github for this dictionary.
+
+```{r teams_dictionary}
+team_hrefs = c(
+  'Arizona Cardinals'= 'crd',
+  'Baltimore Colts'= 'clt',
+  'St Louis Cardinals'= 'crd',
+  'Boston Patriots'= 'nwe',
+  'Chicago Bears'= 'chi',
+  'Green Bay Packers'= 'gnb',
+  'New York Giants'= 'nyg',
+  'Detroit Lions'= 'det',
+  'Washington Commanders'= 'was',
+  'Washington Football Team'= 'was',
+  'Washington Redskins'= 'was',
+  'Philadelphia Eagles'= 'phi',
+  'Pittsburgh Steelers'= 'pit',
+  'Los Angeles Chargers'= 'sdg',
+  'San Francisco 49ers'= 'sfo',
+  'Houston Oilers'= 'oti',
+  'Cleveland Browns'= 'cle',
+  'Indianapolis Colts'= 'clt',
+  'Dallas Cowboys'= 'dal',
+  'Kansas City Chiefs'= 'kan',
+  'Los Angeles Rams'= 'ram',
+  'Denver Broncos'= 'den',
+  'New York Jets'= 'nyj',
+  'New England Patriots'= 'nwe',
+  'Las Vegas Raiders'= 'rai',
+  'Tennessee Titans'= 'oti',
+  'Tennessee Oilers'= 'oti',
+  'Phoenix Cardinals'= 'crd',
+  'Los Angeles Raiders'= 'rai',
+  'Buffalo Bills'= 'buf',
+  'Minnesota Vikings'= 'min',
+  'Atlanta Falcons'= 'atl',
+  'Miami Dolphins'= 'mia',
+  'New Orleans Saints'= 'nor',
+  'Cincinnati Bengals'= 'cin',
+  'Seattle Seahawks'= 'sea',
+  'Tampa Bay Buccaneers'= 'tam',
+  'Carolina Panthers'= 'car',
+  'Jacksonville Jaguars'= 'jax',
+  'Baltimore Ravens'= 'rav',
+  'Houston Texans'= 'htx',
+  'Oakland Raiders'= 'rai',
+  'San Diego Chargers'= 'sdg',
+  'St Louis Rams'= 'ram',
+  'Boston Patriots'= 'nwe'
+)
+```
+
+Now it is time for the largest data download of this project, I have an entry in this data set for every single game played by a team since the inception of the NFL in 1970. My outermost for loop goes through the years 1970 - 2022, and my inner for loop goes through each team for the given year. I can access HTML tables from Pro Football Reference using both the year and team name in the URL. I shed some variables that get downloaded that are not usable in a linear model such as Opponent Team Name.
+
+```{r download, eval = FALSE}
+wins <- data.frame(matrix(ncol = 3))
+colnames(wins) <- c("Team", "Wins", "Year")
+allGames <- data.frame(matrix(ncol = 27))
+colnames(allGames) = c("Week", "W.L", "Tm", "Opp","Pass.Cmp", "Pass.Att", "Pass.Yds", "Pass.TD", "Int", "Sk", "Sk.Yds", "Pass.Y.A", "Pass.NY.A", "Cmp%", "Rush.Rate", "Rush.Att", "Rush.Yds", "Rush.Y.A", "Rush.TD", "FGM", "FGA", "XPM", "XPA", "Pnt", "Pnt.Yds", "Year", "Team")
+
+# loop takes ~ 1.5 hours to complete
+for (i in 1970:2022) {
+  print(i)
+  season <- get_season(i)
+  season <- season[,c(1:2,16)]
+  # gets rid of special chars
+  season$Team <- gsub('[^[:alnum:] ]', '', season$Team) 
+  
+  # wins is total wins for each team for each season
+  if (i == 1970) {
+    wins <- season
+  } else {
+    wins <- rbind(wins, season)
+  }
+  
+  
+  for (team in season$Team) {
+    print(team)
+    url <- paste("https://www.pro-football-reference.com/teams/" , team_hrefs[team] , "/", i, "/gamelog/", sep = '')
+    url %>%
+      read_html %>%
+      html_table() -> df # gets table from html
+    teamOne <- as.data.frame(df[[1]]) # converts to data frame
+    teamOne <- teamOne[c(1,5,9:31)] # gets rid of data I can't use in a linear model
+    teamOne$year <- i #adds year so I can combine data frames later
+    teamOne$team <- team # adds team name to data
+    colnames(teamOne) = c("Week", "W.L", "Tm", "Opp","Pass.Cmp", "Pass.Att", "Pass.Yds", "Pass.TD", "Int", "Sk", "Sk.Yds", "Pass.Y.A", "Pass.NY.A", "Cmp%", "Rush.Rate", "Rush.Att", "Rush.Yds", "Rush.Y.A", "Rush.TD", "FGM", "FGA", "XPM", "XPA", "Pnt", "Pnt.Yds","Year", "Team")
+    
+    # excludes first row of
+    allGames <- rbind(G1, teamOne[-1,])  blanks
+    # more than 20 requests in a minute puts me in 'jail'
+    Sys.sleep(3) 
+  }
+}
+```
+
+Pro Football Reference allows users to access HTML pages to download but to prevent too many bots, the IP you request from get blocked if you have 20 requests in the same minute. The only way around this was time, my program had to wait 3 seconds after each addition so I would not get banned.
+
+Since it took so long to download everything I saved the data sets into .csv files.
+
+```{r creating files, eval = FALSE}
+games <- allGames[-1,]
+# week column is stored as chars, I need it to be numeric
+games[,c(1,3:26)] <- sapply(games[,c(-2,-27)], as.numeric)
+
+#breakpoint to download the file because I dont want to download it from the internet again
+write.csv(games, file = 'NFL Data Unprocessed.csv', row.names = FALSE)
+write.csv(wins, file = 'NFL wins.csv', row.names = FALSE)
+```
+
+
+## Sub-setting Data
+
+My two .csv files are not enough for the analysis I want to do, I need to subset the data so I can get the first n games from a team into one row of a new data set and combine the total season wins with the appropriate team, year. I had to be careful with how I made this function since the number of games has increased since the beginning of the NFL, so I added logic to ignore a specific team, year if they do not have at least n games played that season. This results in my data set with more than 12 games having fewer entries.
+
+```{r getNWeeks}
+getNWeeks <- function(n, wins, games) {
+  
+  nWeeks <- as.data.frame(matrix(nrow = 0, ncol = 29))
+  colnames(nWeeks) = c("Team", "Year", "Tm", "Opp", "Pass.Cmp", "Pass.Att", "Pass.Yds", "Pass.TD", "Int", "Sk", "Sk.Yds", "Pass.Y.A", "Pass.NY.A", "Cmp.", "Rush.Rate", "Rush.Att", "Rush.Yds", "Rush.Y.A", "Rush.TD", "FGM", "FGA", "XPM", "XPA", "Pnt", "Pnt.Yds", "L", "W", "T", "Wins")
+  
+  # temp df with col names
+  tempS <- nWeeks[0,]
+  # df to change vector of "W", "L", or "T" into non categorical data
+  wlt <- as.data.frame(matrix(nrow = 1, ncol = 3))
+  colnames(wlt) = c('L', 'T', 'W')
+ 
+  for (i in rownames(wins)) {
+    # subset only the rows for the specific team, year
+    tempS = games[intersect(which(games$Team == wins[i,1]), which(games$Year == wins[i,3])),]
+    # subset only the first n games in a season
+    tempS = tempS[1:n,]
+    tempS <- tempS[!is.na(tempS[,1]),]
+    
+    # the number of games each season changes I don't want to only use data of a team
+    # with less games than n
+    if (nrow(tempS) >= n){
+      # transform vector of W,L,T values to table of wins, losses, and ties
+      wlt = rbind.fill(as.data.frame(t(as.matrix(table(tempS$W.L)))),wlt[-1,])
+      wlt[is.na(wlt)] <- 0
+      
+      # getting the sum of all numeric rows
+      rowToAdd <- colSums(tempS[3:25])
+      # converting sums of averages back to averages
+      rowToAdd[c(9:12,16)] = rowToAdd[c(9:12,16)] / n
+      #add win loss tie
+      rowToAdd = cbind(as.data.frame(t(as.matrix(rowToAdd))), wlt)
+      #add name and year
+      rowToAdd = cbind(rowToAdd, tempS[1, c(26,27)]) 
+      
+      #add row to dataframe
+      nWeeks <- rbind(nWeeks, rowToAdd)
+      
+    }
+  }
+  return(merge(nWeeks, wins, by = c("Team", "Year")))
+}
+```
+
+
+## Regression Functions
+
+Now that my data is subset correctly I can make and refine my models. I do this with the help of 4 different functions makeNFLModel makes the initial model, residCheck checks the residuals, mlcCheck checks for Multicollinearity, and sigCheck checks for significance. I put all these functions into one function so I can make my models in one step.
+
+```{r Regression Functions}
+#function to make the fist model with backwards step wise regression
+makeNFLModel <- function(weeksdf){
+  
+  model <- lm(Wins ~ Tm + Opp + Pass.Cmp + Pass.Att + Pass.Yds + Pass.TD + Int +
+              Sk + Sk.Yds + Pass.Y.A + Pass.NY.A + Cmp. + Rush.Rate + Rush.Att +
+              Rush.Yds + Rush.Y.A + Rush.TD + FGM + FGA + XPM + XPA + Pnt +
+              Pnt.Yds + L + W + T, data = weeksdf)
+  #returns a backwards model
+  return(step(model, direction = 'backward', trace = 0))
+}
+
+#check the residuals for normality
+residCheck <- function(backModel, name){
+  res <- resid(backModel)
+  qqnorm(res)
+  qqline(res)
+  plot(density(res), main = paste(paste("Residual Density Curve for first", name), "weeks"))
+}
+
+
+#check Multicollinearity and remove vars
+mlcCheck <- function(model, weeksdf) {
+  #check variance inflation factor for multicollinearity 
+  all_vifs <- car::vif(model)
+  signif_all <- names(all_vifs)
+  
+  
+  while(any(all_vifs > 4)){ 
+    var_with_max_vif <- names(which(all_vifs == max(all_vifs))) # get var with max vif
+    signif_all <- signif_all[!(signif_all) %in% var_with_max_vif] # remove
+    myForm <- as.formula(paste("Wins ~ ", paste(signif_all, collapse="+"), sep = "")) # new formula
+    selectedMod <- lm(myForm, data = weeksdf) #rebuild new style
+    all_vifs <- car::vif(selectedMod)}
+  
+  return(selectedMod)
+}
+
+#last check for significance
+sigCheck <- function(model, weeksdf) {
+  all_vars <- names(model[[1]])[-1]
+  summ <- summary(model)
+  pvals <- summ[[4]][,4] # get p values
+  not_sig <- character()
+  not_sig <- names(which(pvals > 0.1))
+  
+  #if all vars are significant does not execute the while loop and return original model
+  if(length(not_sig) == 0){
+    return(model)
+  }
+  
+  while(length(not_sig > 0)) {
+    all_vars <- all_vars[!all_vars %in% not_sig[1]]
+    myForm <- as.formula(paste("Wins ~ ", paste(all_vars, collapse=" + "), sep = ""))
+    signif <- lm(myForm, data = weeksdf)
+    
+    summ <- summary(signif)
+    pvals <- summ[[4]][,4]
+    not_sig <- character()
+    not_sig <- names(which(pvals > 0.1))
+    not_sig <- not_sig[!not_sig %in% "(Intercept)"]
+  }
+  
+  return(signif)
+}
+
+# function to do it all
+NFLRegression <- function(weeksdf) {
+  m1 <- makeNFLModel(weeksdf)
+  residCheck(m1, deparse(substitute(weeksdf)))
+  m2 <- mlcCheck(m1, weeksdf)
+  m3 <- sigCheck(m2, weeksdf)
+  return(m3)
+}
+```
+
+
+## Making the Models
+
+Now I get to make my models!
+
+```{r model creation, echo = TRUE, fig.show = 'hide', warning = FALSE}
+# reading initial data
+games <- read.csv(here("NFL Data Unprocessed.csv"))
+wins <- read.csv(here("NFL wins.csv"))
+
+models <- list()
+for (i in 1:17) {
+  #subsets the data and outputs that into the regression functions
+  models[[i]] <- NFLRegression(getNWeeks(i, wins, games))
+}
+```
+
+I have to manually review how normal each plot is, and in my data, the last four data sets start to have non normal residuals. This is partly true because there are much fewer games in those data sets since the number of games has increased since the start of the NFL.
+
+
+## Reviewing Results
+
+Now that I have every model made I can make the predictions after I get data to predict. Reusing my code from earlier made this process easy, and I was able to use my function getNWeeks without changing anything.
+
+```{r Prediction Data, warning = FALSE}
+#ls for last season
+ls <- get_season(2023)
+ls$Team <- gsub('[^[:alnum:] ]', '', ls$Team)
+ls <- ls[,c(1,2,16)]
+colnames(ls)[2] = "Wins"
+ls = ls[order(ls$Team),]
+
+#getting sample data for the model
+wins <- data.frame(matrix(ncol = 3))
+colnames(wins) <- c("Team", "Wins", "Year")
+lsSamp <- data.frame(matrix(ncol = 27))
+colnames(lsSamp) = c("Week", "W.L", "Tm", "Opp","Pass.Cmp", "Pass.Att", "Pass.Yds", "Pass.TD", "Int",
+                 "Sk", "Sk.Yds", "Pass.Y.A", "Pass.NY.A", "Cmp.", "Rush.Rate", "Rush.Att", "Rush.Yds",
+                 "Rush.Y.A", "Rush.TD", "FGM", "FGA", "XPM", "XPA", "Pnt", "Pnt.Yds",
+                 "Year", "Team")
+
+# same for loop as in data-mining it just doesn't have the outer loop for every year
+for (team in ls$Team) {
+  if(is.na(lsSamp[1,1])){ 
+    lsSamp = lsSamp[-1,]
+  }
+  
+  url <- paste("https://www.pro-football-reference.com/teams/" , team_hrefs[team] , "/2023/gamelog/", sep = '')
+  url %>%
+    read_html %>%
+    html_table() -> df # gets table from html
+  tempSeason <- as.data.frame(df[[1]]) # converts to data frame
+  tempSeason <- tempSeason[c(1,5,9:31)] # gets rid of data I can't use in a linear model
+  tempSeason$year <- 2023 #adds year
+  tempSeason$team <- team # adds team name to data
+  colnames(tempSeason) = colnames(lsSamp)
+  
+  lsSamp <- rbind(lsSamp, tempSeason[-1,])
+  Sys.sleep(3) # more than 20 requests per minute puts me in jail 
+}
+
+# convert datatype to numeric
+lsSamp[,c(1,3:26)] <- sapply(lsSamp[,c(-2,-27)], as.numeric)
+```
+
+I have two data sets that mimic the allGames and win. lsSamp is last season sample and ls is equivalent to wins.
+
+```{r prediction generation}
+########## Finally making the predictions!! #######
+predictions <- matrix(nrow = 17, ncol = 32)
+for (i in 1:17) {
+  temp <- getNWeeks(i,ls,lsSamp)
+  temp <- predict.lm(models[[i]],temp)
+  predictions[i,] = temp
+}
+
+```
+
+
+## Analysis
+
+The two measures of predictors I use are accuracy and RMSE. RMSE stands for root mean square error and this is calculated with the formula $\sqrt{1/n(\sum{(\hat{Y} - Y)^2})}$. This is a lot to look at and understand so I will break it down a bit. The innermost part of it is the predicted value minus the actual value squared. Squaring this value is important because it is always positive now. Then you take the average value for all the squared errors and the square root of that is your MRSE. This measures the effectiveness of a predictor, where a lower MRSE shows a better predictor.
+
+To find the accuracy I round down every value of my squared error count the number of values that are 0 and divide that by the total amount of values.
+
+Before I graph anything I need to generate the data I just mentioned.
+
+```{r Analyzing Predictions Data}
+sqerror <- t(apply(predictions, 1, function(x) (x - ls$Wins)^2))
+
+#RMSE for each week and each team
+weekrmse <- apply(sqerror, 1, function(x) sqrt(sum(x) / 32))
+teamrmse <- apply(sqerror, 2, function(x) sqrt(sum(x) / 17))
+
+# accuracy of predictions for each week, team
+accW <- apply(floor(sqerror), 1, function(x) length(which(x == 0))) / 32
+accT <- apply(floor(sqerror), 2, function(x) length(which(x == 0))) / 17
+
+teamPredict <- cbind(teamrmse, accT, ls[,1:2])
+weekPredict <- as.data.frame(cbind(weekrmse, accW, 1:17))
+colnames(weekPredict)[3] = "week"
+```
+
+Here are the graphs I made.
+
+```{r Accuracy Graph}
+ggplot(weekPredict, aes(x = week, y = accW)) +
+  geom_point() +
+  labs(x = "Week",
+       y = "% of games correctly predicted",
+       title = "Accuracy Over Time")
+```
+
+Here is Accuracy over the weeks, the trends show that the models get better as they are getting more data. There seems to be more spread in the last few weeks of the data, but again those have less data to train on.
+
+```{r RMSE Graph}
+
+ggplot(weekPredict, aes(x = week, y = weekrmse)) +
+  geom_point() +
+  labs(x = "Week",
+       y = "RMSE",
+       title = "RMSE over time")
+
+```
+
+This is RMSE for each model, you can see from this graph that it is decreasing which shows that the predictions are improving. While the last few models have the best RMSE, there is more variation from having less data.
+
+```{r Accuracy and RMSE}
+ggplot(weekPredict, aes(x = accW, y = weekrmse)) +
+  geom_text(aes(label = week)) +
+  labs(x = "Percentage of correct Predictions",
+       y = "Weekly RMSE",
+       title = "Accuracy and RMSE of each model")
+
+ggplot(teamPredict, aes(x = accT, y = teamrmse)) +
+  nflplotR::geom_nfl_logos(aes(team_abbr = team_hrefs[Team]), width = 0.055, alpha = 0.7) +
+  ggplot2::labs(x = "Percentage of Correct Predictions",
+                y = "Team RMSE",
+                title = "Accuracy and RMSE of Team Predictors")
+
+
+```
+
+My graph that includes the NFL icons does not tell us a whole lot about how well the models predict, but it is fun to look at which teams were easiest to predict. The MRSE and Accuracy are made using the results of the 17 models and averaging it out by team. The graph shows that the Jacksonville Jaguars had the most success with this model, while it just could not figure out what the Chargers were doing. This graph does show that there is some relation between accuracy and RMSE.
+
+The Second graph from this section shows the performance of each model, and there is a similar trend between RMSE and accuracy again. Since the points are numbered you can find which dot is which model.
+
+## Conclusion
+
+This project accomplished its goal of showing that predictive models are better as they get more data. I was very interested in the first six weeks, each model's RMSE got better at a nearly linear rate, then plateaued before the scatter of having less data to train the model.
+
+Overall I am very happy with how this project turned out I was able to show what I wanted, and I learned a lot during the process. I have been coding in R for 4 years but every project has new packages to learn and new skills to try. I think where this project could be improved upon is getting even more data into the model, I did not include categorical data in my model because it is difficult to handle, but maybe you could factor the other team they are playing into the model. The other place for expansion in this project would be predicting if teams will make it to the playoffs with similar data.
+
+Thank you for taking the time to explore my project. I’ve put in a lot of hard work while searching for a data analyst or statistician role. If you’re impressed by my work, I’d love to talk about how I can bring the same dedication and quality to your team.
